@@ -1,4 +1,4 @@
-import { createClient, type RedisClientType } from 'redis';
+import { createClient, type RedisClientType } from "redis";
 
 let redisClient: RedisClientType | null = null;
 let isConnected = false;
@@ -13,29 +13,36 @@ export const getRedisClient = async (): Promise<RedisClientType | null> => {
   }
 
   try {
+    const isSecure = process.env.REDIS_URL.startsWith("rediss://");
     redisClient = createClient({
       url: process.env.REDIS_URL,
+      socket: {
+        // family: 4, // Force IPv4 to prevent resolution issues
+        tls: isSecure,
+        rejectUnauthorized: false, // Often required for cloud Redis certs
+        // keepAlive: 5000 // Prevent idle timeouts
+      },
     });
 
-    redisClient.on('error', (err) => {
-      console.error('Redis Client Error:', err.message);
+    redisClient.on("error", (err) => {
+      console.error("Redis Client Error:", err.message);
       isConnected = false;
     });
 
-    redisClient.on('connect', () => {
-      console.log('Redis connected');
+    redisClient.on("connect", () => {
+      console.log("Redis connected");
       isConnected = true;
     });
 
-    redisClient.on('reconnecting', () => {
-      console.log('Redis reconnecting...');
+    redisClient.on("reconnecting", () => {
+      console.log("Redis reconnecting...");
     });
 
     await redisClient.connect();
     return redisClient;
   } catch (error: any) {
-    console.error('Redis connection failed:', error.message);
-    console.log('App will continue without Redis caching.');
+    console.error("Redis connection failed:", error.message);
+    console.log("App will continue without Redis caching.");
     redisClient = null;
     isConnected = false;
     return null;
@@ -53,7 +60,11 @@ export const cacheGet = async (key: string): Promise<string | null> => {
   }
 };
 
-export const cacheSet = async (key: string, value: string, ttlSeconds: number = 30): Promise<void> => {
+export const cacheSet = async (
+  key: string,
+  value: string,
+  ttlSeconds: number = 30,
+): Promise<void> => {
   try {
     const client = await getRedisClient();
     if (!client) return;
@@ -67,9 +78,9 @@ export const cacheDel = async (pattern: string): Promise<void> => {
   try {
     const client = await getRedisClient();
     if (!client) return;
-    
+
     // If it's a specific key, delete it directly
-    if (!pattern.includes('*')) {
+    if (!pattern.includes("*")) {
       await client.del(pattern);
       return;
     }
