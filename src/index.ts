@@ -73,8 +73,8 @@ const startServer = async () => {
       // Set up Socket.IO Redis adapter for horizontal scaling
       try {
         const { createAdapter } = await import("@socket.io/redis-adapter");
-        const pubClient = await createFreshClient();
-        const subClient = await createFreshClient();
+        const pubClient = getRedisClient();
+        const subClient = createFreshClient("Sub Redis");
         
         if (pubClient && subClient) {
           io.adapter(createAdapter(pubClient, subClient));

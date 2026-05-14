@@ -1,79 +1,74 @@
-import { createClient, type RedisClientType } from "redis";
+import Redis from "ioredis";
 
-let redisClient: RedisClientType | null = null;
-let isConnected = false;
+let redisClient: Redis | null = null;
 
-export const getRedisClient = async (): Promise<RedisClientType | null> => {
-  if (!process.env.REDIS_URL) {
-    return null;
-  }
-
-  if (redisClient && isConnected) {
-    return redisClient;
-  }
-
+/**
+ * Creates a fresh ioredis client with settings optimized for Upstash/Cloud Redis.
+ */
+export const createFreshClient = (name: string = "Redis"): Redis | null => {
+  const urlString = process.env.REDIS_URL;
+  if (!urlString) return null;
+  
   try {
-    const isSecure = process.env.REDIS_URL.startsWith("rediss://");
-    redisClient = createClient({
-      url: process.env.REDIS_URL,
-      socket: {
-        tls: isSecure,
-        rejectUnauthorized: false,
-      },
-      pingInterval: 5000, // Frequent pings to keep the socket alive
+    const parsed = new URL(urlString);
+    
+    // Upstash explicitly requires TLS (rediss://) for their public endpoints.
+    // If the URL starts with redis:// (one 's'), we force TLS anyway for Upstash hosts.
+    const isUpstash = parsed.hostname.includes("upstash.io");
+    const isSecure = parsed.protocol === "rediss:" || isUpstash;
+    
+    console.log(`[${name}] Host: ${parsed.hostname} | Port: ${parsed.port || 6379} | TLS Required: ${isSecure}`);
+
+    const options: any = {
+      host: parsed.hostname,
+      port: Number(parsed.port) || 6379,
+      password: parsed.password,
+      username: parsed.username || "default",
+      maxRetriesPerRequest: null,
+      retryStrategy: (times: number) => Math.min(times * 500, 10000),
+      connectTimeout: 10000,
+      family: 4, 
+      // Force TLS if it's Upstash or rediss:// was provided
+      tls: isSecure ? { rejectUnauthorized: false } : undefined,
+    };
+
+    const client = new Redis(options);
+
+    client.on("error", (err) => {
+      console.error(`[${name}] Error:`, err.message);
     });
 
-    redisClient.on("error", (err) => {
-      console.error("Redis Client Error:", err.message);
-      isConnected = false;
+    client.on("connect", () => {
+      console.log(`[${name}] status: TCP connection established...`);
     });
 
-    redisClient.on("connect", () => {
-      console.log("Redis connected");
-      isConnected = true;
+    client.on("ready", () => {
+      console.log(`[${name}] status: Ready (Authentication successful)`);
     });
 
-    redisClient.on("reconnecting", () => {
-      console.log("Redis reconnecting...");
+    client.on("close", () => {
+      console.log(`[${name}] status: Connection closed by server`);
     });
 
-    await redisClient.connect();
-    return redisClient;
+    return client;
   } catch (error: any) {
-    console.error("Redis connection failed:", error.message);
-    console.log("App will continue without Redis caching.");
-    redisClient = null;
-    isConnected = false;
+    console.error(`[${name}] config error:`, error.message);
     return null;
   }
 };
 
-export const createFreshClient = async (): Promise<RedisClientType | null> => {
+export const getRedisClient = (): Redis | null => {
   if (!process.env.REDIS_URL) return null;
-  const isSecure = process.env.REDIS_URL.startsWith("rediss://");
-  try {
-    const client = createClient({
-      url: process.env.REDIS_URL,
-      socket: {
-        tls: isSecure,
-        rejectUnauthorized: false,
-      },
-      pingInterval: 5000,
-    });
-    client.on("error", (err) => console.error("Fresh Redis Client Error:", err.message));
-    await client.connect();
-    return client as RedisClientType;
-  } catch (error: any) {
-    console.error("Failed to create fresh Redis client:", error.message);
-    return null;
-  }
+  if (redisClient) return redisClient;
+  redisClient = createFreshClient("Cache Redis");
+  return redisClient;
 };
 
-// Cache helpers with graceful fallback
+// Cache helpers
 export const cacheGet = async (key: string): Promise<string | null> => {
   try {
-    const client = await getRedisClient();
-    if (!client) return null;
+    const client = getRedisClient();
+    if (!client || client.status !== "ready") return null;
     return await client.get(key);
   } catch {
     return null;
@@ -86,34 +81,32 @@ export const cacheSet = async (
   ttlSeconds: number = 30,
 ): Promise<void> => {
   try {
-    const client = await getRedisClient();
-    if (!client) return;
-    await client.set(key, value, { EX: ttlSeconds });
+    const client = getRedisClient();
+    if (!client || client.status !== "ready") return;
+    await client.set(key, value, "EX", ttlSeconds);
   } catch {
-    // Silently fail - caching is an optimization, not a requirement
+    // Silently fail
   }
 };
 
 export const cacheDel = async (pattern: string): Promise<void> => {
   try {
-    const client = await getRedisClient();
-    if (!client) return;
+    const client = getRedisClient();
+    if (!client || client.status !== "ready") return;
 
-    // If it's a specific key, delete it directly
     if (!pattern.includes("*")) {
       await client.del(pattern);
       return;
     }
 
-    // For patterns, use SCAN to find matching keys
-    let cursor = 0;
-    do {
-      const result = await client.scan(cursor, { MATCH: pattern, COUNT: 100 });
-      cursor = result.cursor;
-      if (result.keys.length > 0) {
-        await client.del(result.keys);
+    const stream = client.scanStream({ match: pattern, count: 100 });
+    stream.on("data", async (keys) => {
+      if (keys.length) {
+        const pipeline = client.pipeline();
+        keys.forEach((k: string) => pipeline.del(k));
+        await pipeline.exec();
       }
-    } while (cursor !== 0);
+    });
   } catch {
     // Silently fail
   }
