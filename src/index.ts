@@ -6,7 +6,7 @@ import helmet from "helmet";
 import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 import { connectDB } from "./config/db";
-import { getRedisClient } from "./config/redis";
+import { getRedisClient, createFreshClient } from "./config/redis";
 import chatSocket from "./sockets/chatSocket";
 
 dotenv.config();
@@ -73,11 +73,15 @@ const startServer = async () => {
       // Set up Socket.IO Redis adapter for horizontal scaling
       try {
         const { createAdapter } = await import("@socket.io/redis-adapter");
-        const pubClient = redisClient;
-        const subClient = pubClient.duplicate();
-        await subClient.connect();
-        io.adapter(createAdapter(pubClient, subClient));
-        console.log("Socket.IO Redis adapter enabled (horizontal scaling ready)");
+        const pubClient = await createFreshClient();
+        const subClient = await createFreshClient();
+        
+        if (pubClient && subClient) {
+          io.adapter(createAdapter(pubClient, subClient));
+          console.log("Socket.IO Redis adapter enabled (horizontal scaling ready)");
+        } else {
+          console.log("Could not create Redis clients for adapter. Running in single-instance mode.");
+        }
       } catch (err: any) {
         console.log("Socket.IO Redis adapter not available:", err.message);
         console.log("Running in single-instance mode (this is fine for most use cases)");

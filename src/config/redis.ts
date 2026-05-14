@@ -17,11 +17,10 @@ export const getRedisClient = async (): Promise<RedisClientType | null> => {
     redisClient = createClient({
       url: process.env.REDIS_URL,
       socket: {
-        // family: 4, // Force IPv4 to prevent resolution issues
         tls: isSecure,
-        rejectUnauthorized: false, // Often required for cloud Redis certs
-        // keepAlive: 5000 // Prevent idle timeouts
+        rejectUnauthorized: false,
       },
+      pingInterval: 5000, // Frequent pings to keep the socket alive
     });
 
     redisClient.on("error", (err) => {
@@ -45,6 +44,27 @@ export const getRedisClient = async (): Promise<RedisClientType | null> => {
     console.log("App will continue without Redis caching.");
     redisClient = null;
     isConnected = false;
+    return null;
+  }
+};
+
+export const createFreshClient = async (): Promise<RedisClientType | null> => {
+  if (!process.env.REDIS_URL) return null;
+  const isSecure = process.env.REDIS_URL.startsWith("rediss://");
+  try {
+    const client = createClient({
+      url: process.env.REDIS_URL,
+      socket: {
+        tls: isSecure,
+        rejectUnauthorized: false,
+      },
+      pingInterval: 5000,
+    });
+    client.on("error", (err) => console.error("Fresh Redis Client Error:", err.message));
+    await client.connect();
+    return client as RedisClientType;
+  } catch (error: any) {
+    console.error("Failed to create fresh Redis client:", error.message);
     return null;
   }
 };
