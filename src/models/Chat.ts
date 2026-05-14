@@ -19,4 +19,10 @@ const chatSchema = new mongoose.Schema({
   mutedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
 }, { timestamps: true });
 
+// Performance indexes
+chatSchema.index({ participants: 1 }); // fetchChats: find by participant
+chatSchema.index({ updatedAt: -1 });   // chat list sorting (newest first)
+chatSchema.index({ participants: 1, updatedAt: -1 }); // compound for sorted participant queries
+
 export default mongoose.model('Chat', chatSchema);
+

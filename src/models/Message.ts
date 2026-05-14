@@ -50,4 +50,8 @@ const messageSchema = new mongoose.Schema({
   ],
 }, { timestamps: true });
 
+// Performance indexes
+messageSchema.index({ chatId: 1, createdAt: -1 }); // pagination: messages by chat sorted newest first
+messageSchema.index({ chatId: 1, senderId: 1 });    // mark_as_read: find unread messages by sender in a chat
+
 export default mongoose.model('Message', messageSchema);

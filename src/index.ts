@@ -6,6 +6,7 @@ import helmet from "helmet";
 import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 import { connectDB } from "./config/db";
+import { getRedisClient } from "./config/redis";
 import chatSocket from "./sockets/chatSocket";
 
 dotenv.config();
@@ -65,6 +66,26 @@ const PORT = process.env.PORT || 5000;
 const startServer = async () => {
   try {
     await connectDB();
+
+    // Connect Redis (optional - app works without it)
+    const redisClient = await getRedisClient();
+    if (redisClient) {
+      // Set up Socket.IO Redis adapter for horizontal scaling
+      try {
+        const { createAdapter } = await import("@socket.io/redis-adapter");
+        const pubClient = redisClient;
+        const subClient = pubClient.duplicate();
+        await subClient.connect();
+        io.adapter(createAdapter(pubClient, subClient));
+        console.log("Socket.IO Redis adapter enabled (horizontal scaling ready)");
+      } catch (err: any) {
+        console.log("Socket.IO Redis adapter not available:", err.message);
+        console.log("Running in single-instance mode (this is fine for most use cases)");
+      }
+    } else {
+      console.log("Redis not configured. Running without caching (set REDIS_URL to enable).");
+    }
+
     server.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
     });

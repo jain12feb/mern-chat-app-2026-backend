@@ -3,6 +3,7 @@ import asyncHandler from 'express-async-handler';
 import Chat from '../models/Chat';
 import User from '../models/User';
 import Message from '../models/Message';
+import { cacheGet, cacheSet, cacheDel } from '../config/redis';
 
 // @desc    Create or fetch 1:1 chat
 // @route   POST /api/chats
@@ -52,11 +53,34 @@ export const accessChat = asyncHandler(async (req: Request, res: Response) => {
     res.status(200).json(fullChat);
   }
 });
+// Invalidate chat cache for all participants of a chat
+const invalidateChatsCache = async (chatId: string) => {
+  try {
+    const chat = await Chat.findById(chatId).select('participants');
+    if (chat) {
+      for (const participantId of chat.participants) {
+        await cacheDel(`chats:${participantId.toString()}`);
+      }
+    }
+  } catch {
+    // Silently fail - cache invalidation is best-effort
+  }
+};
 
 // @desc    Fetch all chats for a user
 // @route   GET /api/chats
 // @access  Protected
 export const fetchChats = asyncHandler(async (req: Request, res: Response) => {
+  const userId = req.user._id.toString();
+  const cacheKey = `chats:${userId}`;
+
+  // Try cache first
+  const cached = await cacheGet(cacheKey);
+  if (cached) {
+    res.status(200).json(JSON.parse(cached));
+    return;
+  }
+
   let results: any = await Chat.find({ participants: { $elemMatch: { $eq: req.user._id } } })
     .populate('participants', '-password')
     .populate('groupAdmin', '-password')
@@ -73,6 +97,9 @@ export const fetchChats = asyncHandler(async (req: Request, res: Response) => {
     path: 'pinnedMessages.senderId',
     select: 'username avatar email',
   });
+
+  // Cache for 15 seconds
+  await cacheSet(cacheKey, JSON.stringify(results), 15);
 
   res.status(200).send(results);
 });
@@ -124,6 +151,9 @@ export const createGroupChat = asyncHandler(async (req: Request, res: Response) 
       populate: { path: "senderId", select: "username avatar email" },
     });
 
+  // Invalidate cache for all participants
+  await invalidateChatsCache(groupChat._id.toString());
+
   res.status(200).json({ chat: fullGroupChat, message: systemMsg });
 });
 
@@ -163,6 +193,8 @@ export const renameGroup = asyncHandler(async (req: Request, res: Response) => {
       populate: { path: "senderId", select: "username avatar email" },
     });
 
+  await invalidateChatsCache(chatId);
+
   res.status(200).json({ chat: fullChat, message: systemMsg });
 });
 
@@ -200,6 +232,10 @@ export const addToGroup = asyncHandler(async (req: Request, res: Response) => {
       path: "latestMessage",
       populate: { path: "senderId", select: "username avatar email" },
     });
+
+  await invalidateChatsCache(chatId);
+  // Also invalidate the newly added user's cache
+  await cacheDel(`chats:${userId}`);
 
   res.status(200).json({ chat: fullChat, message: systemMsg });
 });
@@ -239,6 +275,10 @@ export const removeFromGroup = asyncHandler(async (req: Request, res: Response) 
       path: "latestMessage",
       populate: { path: "senderId", select: "username avatar email" },
     });
+
+  await invalidateChatsCache(chatId);
+  // Also invalidate the removed user's cache
+  await cacheDel(`chats:${userId}`);
 
   res.status(200).json({ chat: fullChat, message: systemMsg });
 });
@@ -378,6 +418,10 @@ export const deleteChat = asyncHandler(async (req: Request, res: Response) => {
       res.status(401);
       throw new Error("Not authorized to delete this chat");
     }
+  }
+  // Invalidate cache for all participants before deleting
+  for (const participantId of chat.participants) {
+    await cacheDel(`chats:${participantId.toString()}`);
   }
 
   // Delete all messages in the chat
